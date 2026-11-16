@@ -1,16 +1,19 @@
 """
 Local high-score storage.
 
-Scores are kept in ``scores.json`` next to this file so they survive
-restarts. Writes go through a temp file + replace so a crash mid-write
-cannot corrupt the existing list.
+Scores are kept in ``scores.json`` beside the game (next to the .py files
+when run from source, next to CarGame.exe in a packaged build) so they
+survive restarts. Writes go through a temp file + replace so a crash
+mid-write cannot corrupt the existing list.
 """
 
 import json
 import os
 import time
 
-SCORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scores.json")
+from paths import writable_path
+
+SCORE_FILE = writable_path("scores.json")
 MAX_SCORES = 10
 MODES = ("single", "online")
 

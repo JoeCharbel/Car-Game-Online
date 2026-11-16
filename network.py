@@ -8,7 +8,6 @@ import threading
 import json
 import struct
 import queue
-import time
 
 
 def send_msg(sock, obj):
@@ -176,11 +175,6 @@ class GameServer:
             except queue.Empty:
                 break
         return messages
-
-    def get_player_count(self):
-        """Return total player count (including host)."""
-        with self._lock:
-            return len(self.clients) + 1  # +1 for host
 
 
 class GameClient:

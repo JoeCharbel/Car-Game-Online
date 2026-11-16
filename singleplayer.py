@@ -10,6 +10,7 @@ import random
 import pygame as pg
 
 import highscores as hs
+from paths import resource_path
 
 SCREEN_W, SCREEN_H = 640, 640
 LANES = [
@@ -19,6 +20,18 @@ LANES = [
     (419, 525),   # lane 4 range
 ]
 CAR_W, CAR_H = 30, 80
+BUS_W, BUS_H = 48, 98
+OBSTACLE_LANE_GAP = 28
+BUS_SPAWN_CHANCE = 0.06
+BUS_SPEED_BONUS = 3.0
+
+# Traffic sprites, same set as the online mode: two normal cars and a rare,
+# faster bus. key, file, render size, extra pixels per frame.
+ENEMY_FILES = [
+    ("enemy_green", "enemy.png", (40, 80), 0.0),
+    ("enemy_blue", "enemy2.png", (40, 80), 0.0),
+    ("enemy_bus", "enemy_bus.png", (BUS_W, BUS_H), BUS_SPEED_BONUS),
+]
 
 
 class SinglePlayerGame:
@@ -31,13 +44,20 @@ class SinglePlayerGame:
         self.font_tiny = pg.font.Font(None, 22)
 
         self.background = pg.transform.scale(
-            pg.image.load("background.png").convert(), (SCREEN_W, SCREEN_H))
+            pg.image.load(resource_path("background.png")).convert(),
+            (SCREEN_W, SCREEN_H))
         self.car_img = pg.transform.scale(
-            pg.image.load("redcar.png").convert_alpha(), (CAR_W, CAR_H))
-        self.enemy_imgs = [
-            pg.transform.scale(pg.image.load("enemy.png").convert_alpha(), (40, 80)),
-            pg.transform.scale(pg.image.load("enemy2.png").convert_alpha(), (40, 80)),
-        ]
+            pg.image.load(resource_path("redcar.png")).convert_alpha(), (CAR_W, CAR_H))
+        self.enemy_assets = {
+            key: {
+                "surface": pg.transform.scale(
+                    pg.image.load(resource_path(path)).convert_alpha(), size),
+                "size": size,
+                "speed_bonus": bonus,
+            }
+            for key, path, size, bonus in ENEMY_FILES
+        }
+        self.default_enemy_keys = ["enemy_green", "enemy_blue"]
 
         self.high_score = hs.best_score("single")
         self.reset()
@@ -60,6 +80,52 @@ class SinglePlayerGame:
         self.paused = False
         self.score_saved = False
         self.last_rank = None
+
+    # -------------------------------------------------------------------
+    # Traffic (mirrors the online mode so both play the same)
+    # -------------------------------------------------------------------
+    def _choose_enemy_key(self):
+        """Pick a standard traffic car most of the time, with a rare fast bus."""
+        if random.random() < BUS_SPAWN_CHANCE:
+            return "enemy_bus"
+        return random.choice(self.default_enemy_keys)
+
+    def _can_spawn_obstacle(self, spawn_rect, lane_idx):
+        """Keep new traffic from spawning into occupied space near the top."""
+        for obstacle in self.obstacles:
+            if obstacle["lane_idx"] != lane_idx:
+                continue
+            if spawn_rect.colliderect(obstacle["rect"].inflate(24, 220)):
+                return False
+        return True
+
+    def _obstacle_speed(self, obstacle, base_speed):
+        """Pixels this vehicle wants to cover this frame."""
+        return base_speed + obstacle.get("speed_bonus", 0.0)
+
+    def _move_obstacles_with_spacing(self, base_speed):
+        """
+        Advance traffic, keeping at least OBSTACLE_LANE_GAP between vehicles.
+
+        Each vehicle moves at its own speed (the bus is faster). A faster
+        vehicle that catches the one in front follows at that vehicle's pace
+        instead of driving through it, so a lane never overlaps.
+        """
+        lanes = {}
+        for obstacle in self.obstacles:
+            lanes.setdefault(obstacle.get("lane_idx", -1), []).append(obstacle)
+
+        for lane_obstacles in lanes.values():
+            # Front of the lane first: the largest y is closest to the player.
+            lane_obstacles.sort(key=lambda item: item["rect"].y, reverse=True)
+            vehicle_ahead = None
+            for obstacle in lane_obstacles:
+                rect = obstacle["rect"]
+                rect.y += self._obstacle_speed(obstacle, base_speed)
+                if vehicle_ahead is not None:
+                    # Close the gap, never overlap the vehicle ahead.
+                    rect.y = min(rect.y, vehicle_ahead - OBSTACLE_LANE_GAP - rect.height)
+                vehicle_ahead = rect.y
 
     # -------------------------------------------------------------------
     # Update / draw
@@ -95,31 +161,36 @@ class SinglePlayerGame:
 
         spawn_rate = min(0.02 + (self.score * 0.002), 0.1)
         if random.random() < spawn_rate:
-            lane_start, lane_end = random.choice(LANES)
-            lane = random.randint(lane_start, lane_end)
-            too_close = any(
-                abs(obs.x - lane) < 85 and obs.y < 200
-                for obs, _ in self.obstacles
-            )
-            if not too_close:
-                image = random.choice(self.enemy_imgs)
-                self.obstacles.append((pg.Rect(lane, -40, 35, 70), image))
+            lane_idx = random.randrange(len(LANES))
+            lane_start, lane_end = LANES[lane_idx]
+            enemy_key = self._choose_enemy_key()
+            size = self.enemy_assets[enemy_key]["size"]
+            lane_x_max = max(lane_start, lane_end - size[0])
+            spawn_rect = pg.Rect(
+                random.randint(lane_start, lane_x_max), -size[1], size[0], size[1])
+            if self._can_spawn_obstacle(spawn_rect, lane_idx):
+                self.obstacles.append({
+                    "rect": spawn_rect,
+                    "img_key": enemy_key,
+                    "lane_idx": lane_idx,
+                    "speed_bonus": self.enemy_assets[enemy_key]["speed_bonus"],
+                })
 
-        obstacle_speed = min(4 + (self.score // 20), 15)
-        for obstacle, image in self.obstacles[:]:
-            obstacle.y += obstacle_speed
-            self.screen.blit(image, obstacle)
+        self._move_obstacles_with_spacing(min(4 + (self.score // 20), 15))
+        for obstacle in self.obstacles[:]:
+            rect = obstacle["rect"]
+            self.screen.blit(self.enemy_assets[obstacle["img_key"]]["surface"], rect)
 
-            if (not self.game_over and obstacle.top > self.car.bottom
+            if (not self.game_over and rect.top > self.car.bottom
                     and id(obstacle) not in self.scored):
                 self.score += 1
                 self.scored.add(id(obstacle))
 
-            if obstacle.top > SCREEN_H:
+            if rect.top > SCREEN_H:
                 self.scored.discard(id(obstacle))
-                self.obstacles.remove((obstacle, image))
+                self.obstacles.remove(obstacle)
 
-            if not self.game_over and self.car.colliderect(obstacle):
+            if not self.game_over and self.car.colliderect(rect):
                 self._crash()
 
         self.screen.blit(self.car_img, self.car)
@@ -144,8 +215,9 @@ class SinglePlayerGame:
     def _update_paused(self, events):
         self.screen.blit(self.background, (0, self.bg_y))
         self.screen.blit(self.background, (0, self.bg_y - SCREEN_H))
-        for obstacle, image in self.obstacles:
-            self.screen.blit(image, obstacle)
+        for obstacle in self.obstacles:
+            self.screen.blit(self.enemy_assets[obstacle["img_key"]]["surface"],
+                             obstacle["rect"])
         self.screen.blit(self.car_img, self.car)
 
         overlay = pg.Surface((SCREEN_W, SCREEN_H), pg.SRCALPHA)

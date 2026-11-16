@@ -1,8 +1,8 @@
 """
-Online Multiplayer Car Game — Peer-to-Peer edition.
-Run this file to play online. Original lsl.py is untouched.
+Online multiplayer mode: host a game or join one by IP.
 
-Usage:
+Run through game.py for the mode menu, or run this file directly:
+
     python online_game.py
 """
 
@@ -10,12 +10,12 @@ import pygame as pg
 import random
 import time as _time
 import math
-import sys
 from network import GameServer, GameClient
+from paths import resource_path
 import highscores as hs
 
 # ---------------------------------------------------------------------------
-# Constants (mirrored from lsl.py — core mechanics unchanged)
+# Constants (shared with singleplayer.py so both modes play the same)
 # ---------------------------------------------------------------------------
 SCREEN_W, SCREEN_H = 640, 640
 LANES = [
@@ -30,6 +30,9 @@ BUS_W, BUS_H = 48, 98
 PORT = 5555
 OBSTACLE_LANE_GAP = 28
 BUS_SPAWN_CHANCE = 0.06
+# The bus is the fast vehicle. It wants this many extra pixels per frame and
+# follows the car in front when it catches up, so traffic never overlaps.
+BUS_SPEED_BONUS = 3.0
 
 # Shared road speed. The host is the only one who advances the clock, every
 # screen receives the same speed so traffic lines up on all machines.
@@ -88,7 +91,7 @@ class OnlineGame:
         self.font_tiny = pg.font.Font(None, 22)
 
         # Assets
-        self.background = pg.transform.scale(pg.image.load("background.png").convert(), (SCREEN_W, SCREEN_H))
+        self.background = pg.transform.scale(pg.image.load(resource_path("background.png")).convert(), (SCREEN_W, SCREEN_H))
         self.car_img = self._load_scaled_alpha("redcar.png", (CAR_W, CAR_H))
         self.player_car_imgs = {
             i: self._load_scaled_alpha(path, (CAR_W, CAR_H))
@@ -108,7 +111,7 @@ class OnlineGame:
             'enemy_bus': {
                 'surface': self._load_scaled_alpha("enemy_bus.png", (BUS_W, BUS_H)),
                 'size': (BUS_W, BUS_H),
-                'speed_bonus': 3,
+                'speed_bonus': BUS_SPEED_BONUS,
             },
         }
         self.default_enemy_keys = ['enemy_green', 'enemy_blue']
@@ -160,7 +163,8 @@ class OnlineGame:
 
     def _load_scaled_alpha(self, path, size):
         """Load an image with alpha preserved and scale it to the requested size."""
-        return pg.transform.scale(pg.image.load(path).convert_alpha(), size)
+        return pg.transform.scale(
+            pg.image.load(resource_path(path)).convert_alpha(), size)
 
     def _get_player_color_idx(self, pid):
         """Resolve the assigned sprite index for a player."""
@@ -196,25 +200,33 @@ class OnlineGame:
                 return False
         return True
 
-    def _move_obstacles_with_spacing(self, base_speed):
-        """Advance traffic while preserving a gap so faster vehicles never overlap slower ones."""
-        lane_groups = {}
-        for obstacle in self.obstacles:
-            lane_groups.setdefault(obstacle.get('lane_idx', -1), []).append(obstacle)
+    def _obstacle_speed(self, obstacle, base_speed):
+        """Pixels this vehicle wants to cover this frame."""
+        return base_speed + obstacle.get('speed_bonus', 0.0)
 
-        for lane_obstacles in lane_groups.values():
+    def _move_obstacles_with_spacing(self, base_speed):
+        """
+        Advance traffic, keeping at least OBSTACLE_LANE_GAP between vehicles.
+
+        Each vehicle moves at its own speed (the bus is faster). A faster
+        vehicle that catches the one in front follows at that vehicle's pace
+        instead of driving through it, so a lane never overlaps.
+        """
+        lanes = {}
+        for obstacle in self.obstacles:
+            lanes.setdefault(obstacle.get('lane_idx', -1), []).append(obstacle)
+
+        for lane_obstacles in lanes.values():
+            # Front of the lane first: the largest y is closest to the player.
             lane_obstacles.sort(key=lambda item: item['rect'].y, reverse=True)
-            next_open_top = None
+            vehicle_ahead = None
             for obstacle in lane_obstacles:
-                step = base_speed + obstacle.get('speed_bonus', 0)
-                proposed_y = obstacle['rect'].y + step
-                if next_open_top is not None:
-                    proposed_y = min(
-                        proposed_y,
-                        next_open_top - obstacle['rect'].height,
-                    )
-                obstacle['rect'].y = proposed_y
-                next_open_top = obstacle['rect'].top - OBSTACLE_LANE_GAP
+                rect = obstacle['rect']
+                rect.y += self._obstacle_speed(obstacle, base_speed)
+                if vehicle_ahead is not None:
+                    # Close the gap, never overlap the vehicle ahead.
+                    rect.y = min(rect.y, vehicle_ahead - OBSTACLE_LANE_GAP - rect.height)
+                vehicle_ahead = rect.y
 
     # -------------------------------------------------------------------
     # Shared world / player elimination helpers
@@ -260,6 +272,10 @@ class OnlineGame:
                 # Only snap when drift is visible, so normal movement stays smooth.
                 obstacle['rect'].y = item['y']
             obstacle['rect'].x = item.get('x', obstacle['rect'].x)
+            # Keep the lane and speed the host simulates with; the local
+            # spacing pass reads both, so a stale value would desync traffic.
+            obstacle['lane_idx'] = item.get('lane_idx', obstacle['lane_idx'])
+            obstacle['speed_bonus'] = item.get('speed_bonus', obstacle['speed_bonus'])
 
         for obs_id, item in snapshot.items():
             if obs_id in kept_ids:

@@ -9,6 +9,7 @@ import pygame as pg
 
 import highscores as hs
 from online_game import OnlineGame
+from paths import resource_path
 from singleplayer import SinglePlayerGame
 
 SCREEN_W, SCREEN_H = 640, 640
@@ -27,7 +28,8 @@ class CarGame:
         self.font_tiny = pg.font.Font(None, 22)
 
         self.background = pg.transform.scale(
-            pg.image.load("background.png").convert(), (SCREEN_W, SCREEN_H))
+            pg.image.load(resource_path("background.png")).convert(),
+            (SCREEN_W, SCREEN_H))
         self.bg_y = 0
 
         self.running = True
