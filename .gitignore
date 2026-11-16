@@ -1,16 +1,10 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyc
-*.pyo
 
-# Virtual environments
-.venv/
-venv/
-env/
+# Local high scores (created at runtime, per machine)
+scores.json
+scores.json.tmp
 
-# Editors / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+# Archives
+*.zip
